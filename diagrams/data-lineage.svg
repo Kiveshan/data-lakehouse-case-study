@@ -1,0 +1,48 @@
+<svg width="420" viewBox="0 0 680 700" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <title>Data lakehouse lineage</title>
+  <desc>Azure SQL source replicated by DMS into an S3 raw zone, refined through a curated layer 1, modelled into Iceberg dimensions and facts as a Kimball star schema, then mirrored to RDS PostgreSQL for serving.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#73726c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="180" y="30" width="320" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="1"/>
+  <text x="340" y="56" text-anchor="middle" font-size="15" font-weight="500" fill="#2C2C2A">Azure SQL</text>
+  <text x="340" y="75" text-anchor="middle" font-size="12.5" fill="#5F5E5A">Source application database</text>
+  <line x1="340" y1="90" x2="340" y2="112" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="180" y="114" width="320" height="58" rx="8" fill="#E6F1FB" stroke="#378ADD" stroke-width="1"/>
+  <text x="340" y="140" text-anchor="middle" font-size="15" font-weight="500" fill="#0C447C">AWS DMS</text>
+  <text x="340" y="159" text-anchor="middle" font-size="12.5" fill="#185FA5">Replication into S3 (parquet)</text>
+  <line x1="340" y1="174" x2="340" y2="196" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="180" y="198" width="320" height="58" rx="8" fill="#E1F5EE" stroke="#1D9E75" stroke-width="1"/>
+  <text x="340" y="224" text-anchor="middle" font-size="15" font-weight="500" fill="#085041">S3 raw zone</text>
+  <text x="340" y="243" text-anchor="middle" font-size="12.5" fill="#0F6E56">Glue crawler to data catalog</text>
+  <line x1="340" y1="258" x2="340" y2="280" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="180" y="282" width="320" height="58" rx="8" fill="#E1F5EE" stroke="#1D9E75" stroke-width="1"/>
+  <text x="340" y="308" text-anchor="middle" font-size="15" font-weight="500" fill="#085041">S3 layer 1 — curated</text>
+  <text x="340" y="327" text-anchor="middle" font-size="12.5" fill="#0F6E56">Cleaned, file columns dropped</text>
+  <line x1="340" y1="342" x2="340" y2="364" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="180" y="366" width="320" height="58" rx="8" fill="#EEEDFE" stroke="#7F77DD" stroke-width="1"/>
+  <text x="340" y="392" text-anchor="middle" font-size="15" font-weight="500" fill="#3C3489">Iceberg dimensions — layer 2</text>
+  <text x="340" y="411" text-anchor="middle" font-size="12.5" fill="#534AB7">SCD type 2, MERGE upserts</text>
+  <line x1="340" y1="426" x2="340" y2="448" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="180" y="450" width="320" height="58" rx="8" fill="#EEEDFE" stroke="#7F77DD" stroke-width="1"/>
+  <text x="340" y="476" text-anchor="middle" font-size="15" font-weight="500" fill="#3C3489">Iceberg facts — layer 2</text>
+  <text x="340" y="495" text-anchor="middle" font-size="12.5" fill="#534AB7">Kimball star schema (CTAS)</text>
+  <line x1="340" y1="510" x2="340" y2="532" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="180" y="534" width="320" height="58" rx="8" fill="#FAECE7" stroke="#D85A30" stroke-width="1"/>
+  <text x="340" y="560" text-anchor="middle" font-size="15" font-weight="500" fill="#712B13">RDS PostgreSQL</text>
+  <text x="340" y="579" text-anchor="middle" font-size="12.5" fill="#993C1D">Dims + facts, PK/FK rebuilt</text>
+  <line x1="340" y1="594" x2="340" y2="616" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="180" y="618" width="320" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="1"/>
+  <text x="340" y="644" text-anchor="middle" font-size="15" font-weight="500" fill="#2C2C2A">App + BI / reporting</text>
+  <text x="340" y="663" text-anchor="middle" font-size="12.5" fill="#5F5E5A">Star-schema serving queries</text>
+</svg>
