@@ -77,3 +77,92 @@ Short ADR-style records of the decisions that shaped this system. Each notes the
 **Why it was done this way.** Full control over status parsing and the ability to normalise heterogeneous status shapes into a single decision variable.
 
 **What I would change.** Step Functions offers native `.sync` integrations for Glue jobs and SDK integrations for DMS and crawlers that eliminate most of this polling and the associated Lambda cold-starts. Migrating to native integrations would cut moving parts and operational surface. This is the clearest improvement on the list.
+
+## 9. AWS Glue (Spark) as the transformation engine, not Lambda
+
+**Context.** The nightly transform does distributed joins across several hundred tables, an Iceberg `MERGE` maintaining SCD Type 2 dimensions, and `CREATE TABLE AS SELECT` fact builds resolving surrogate keys — roughly 750,000 records per run.
+
+**Decision.** Run all transformation on AWS Glue PySpark jobs. Keep Lambda in the architecture, but only as control-plane task workers that start and poll DMS, crawlers, and Glue jobs.
+
+**Why.** Three independent disqualifiers for Lambda as the transform engine:
+
+- *Compute model.* Lambda is single-node with a 10 GB memory ceiling. The work is a Spark workload; doing it on Lambda means hand-sharding across invocations and reimplementing a shuffle and a scheduler.
+- *Execution ceiling.* Lambda hard-stops at 15 minutes. The failure mode is not a slow job but a truncated one — a timeout part-way through a dimension `MERGE` is precisely the corruption decision 2 exists to prevent.
+- *Ecosystem fit.* Glue reads the Data Catalog the crawler populates, ships the Iceberg runtime, and writes parquet to S3 natively. On Lambda every one of those is a dependency-packaging problem.
+
+**Trade-off.** Glue has a job startup cost of a minute or two and bills per DPU-hour with a minimum billing duration, which makes it genuinely wasteful for small, fast operations. That is exactly why the sub-second, stateless "start this job / what is its status" calls stayed on Lambda. The decision was never Glue *or* Lambda — it was distributed transforms on Glue, control-plane calls on Lambda.
+
+**Alternatives considered.** EMR — more engine control and better economics at sustained scale, but adds cluster lifecycle management to a client with no data team. Glue Python Shell — avoids Spark startup cost, but returns to single-node compute.
+
+## 10. Step Functions for orchestration, not Airflow/MWAA
+
+**Context.** One pipeline, one run per night, a client with no data engineering team to operate the orchestrator.
+
+**Decision.** AWS Step Functions state machines triggered by EventBridge Scheduler.
+
+**Why.**
+
+- *Nothing to keep running.* MWAA bills for an always-on environment regardless of DAG activity. Step Functions bills per state transition, which at one run per night is negligible, and EventBridge Scheduler removes the scheduler process entirely.
+- *Retries are configuration.* Exponential backoff, jitter, bounded retry counts, and `Catch` routing to SNS are declared in the state machine definition rather than written and tested as callback code.
+- *Execution history is the audit trail.* Per-run inputs, outputs, and per-state timings are retained and inspectable with no logging infrastructure or metadata database to operate. For a compliance-adjacent public-sector workload that is a genuine requirement, not a convenience.
+- *IAM boundaries per state,* rather than a worker fleet holding broad credentials.
+
+**Trade-off.** Amazon States Language is verbose and hard to test locally — there is no clean "run the DAG on your laptop" story, so iteration means deploying. Airflow's Python authoring, backfill semantics, and dependency graph are better *if you already operate Airflow*. Standard workflows also cap execution history events, which would constrain a per-table fan-out design; the fixed-sequence design here stays well below the limit.
+
+**Alternatives considered.** A cron-triggered Lambda chaining each job on completion — cheapest possible, rejected because failure handling, partial re-runs, and "where did last night's run stop?" all become bespoke code with no state model behind them.
+
+## 11. AWS DMS for extraction, not a Glue JDBC read
+
+**Context.** The source is a live Azure SQL database backing a production web application. The premise of the project is that analytics must not degrade it.
+
+**Decision.** Use AWS DMS to replicate source tables into the S3 raw zone as parquet.
+
+**Why.** DMS is purpose-built for reading operational databases without holding long-running transactions against them, and it lands parquet in S3 with no bespoke connector code and no extraction logic to maintain as the source schema drifts. A Glue JDBC extract would have meant writing and maintaining per-table read logic and reasoning about its transaction footprint on production myself.
+
+**Trade-off.** A replication instance costs money whether or not it is replicating, and the current configuration does a nightly full load rather than true CDC. Moving to CDC is the obvious lever if source volume grows materially.
+
+## 12. Nightly batch, not streaming or micro-batch
+
+**Context.** The analytical requirements are historical trend analysis, compliance reporting, and sector-wide aggregation.
+
+**Decision.** A single scheduled nightly run.
+
+**Why.** None of the required reporting improves with sub-daily freshness. Streaming would multiply cost, operational surface, and failure modes for a benefit no user would observe.
+
+**Trade-off.** Up to 24 hours of staleness. This is an accepted and documented property of the system rather than an oversight — and it is the assumption to revisit first if the client ever asks for intraday reporting.
+
+## 13. Archive-then-reload the raw zone each run
+
+**Decision.** Archive the previous raw data before each DMS run, so every run starts from a clean raw slate with the prior state recoverable.
+
+**Why.** Idempotency and a simple mental model: a run either produced a complete raw zone or it did not, and last night's landing is still on disk when you need to work out what changed. Combined with the quality gate (decision 6), a bad replication is contained rather than blended into good data.
+
+**Trade-off.** Storage grows with retention, and full reload cost scales with source volume rather than with change volume. At current size that cost is trivial; at ten times the volume this is the first thing to revisit alongside DMS CDC.
+
+## 14. `af-south-1` as the deployment region
+
+**Context.** South African public-sector data, POPIA obligations, source system already in-country.
+
+**Decision.** Deploy the entire lakehouse in `af-south-1` (Cape Town).
+
+**Why.** Keeping the analytical copy in-country removes the cross-border transfer question entirely and keeps latency to the client's users low.
+
+**Trade-off.** A real one: `af-south-1` has a smaller service catalogue, higher unit pricing than `us-east-1`, and new AWS features arrive late. Accepted, because data residency is not something to trade for a discount.
+
+## 15. SNS notification rather than a monitoring stack
+
+**Decision.** Wire SNS failure notification from failed states in both machines, and stop there.
+
+**Why.** The operational requirement is that a failed run must not be discovered as a stale dashboard the next morning. An SNS alert meets that requirement completely. CloudWatch dashboards, anomaly detection, or a paging tool would be more capable and would also be infrastructure nobody at the client is positioned to maintain.
+
+**Trade-off.** No trend visibility on run duration or record counts, so gradual degradation is invisible until it becomes a failure. Right-sizing the operational surface to the team that inherits the system is itself the decision; emitting run metrics to CloudWatch would be a cheap, proportionate next step.
+
+## 16. Provisioned via console and SDK, not IaC — *would revisit*
+
+**Context.** The system grew incrementally against a live client need rather than being designed up-front.
+
+**Decision (as built).** Resources were created through the AWS console and SDK as the pipeline took shape.
+
+**Why it was done this way.** It was the fastest path to a working nightly pipeline while the shape of the solution was still moving, and the client's need was for a running system, not a reproducible one.
+
+**What I would change.** Capture the whole stack in Terraform with remote state and plan-on-PR. As built, the environment is not reproducible from source and there is no review gate on infrastructure change — the two things I would want before anyone else touched it. That migration is in progress separately.

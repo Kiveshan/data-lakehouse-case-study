@@ -73,13 +73,62 @@ The warehouse is a deliberate Kimball star schema, not a flattened dump:
 | Alerting | Amazon SNS |
 | Serving database | Amazon RDS for PostgreSQL |
 
-## Key design decisions
+## Architecture decisions
 
-The full set with rationale and trade-offs is in [docs/decisions.md](docs/decisions.md). The three that matter most:
+Every component here was chosen against a real alternative. The full ADR set is in [docs/decisions.md](docs/decisions.md); this section covers the questions that get asked most.
 
-- **Apache Iceberg over plain parquet for the warehouse layer.** Iceberg gives ACID writes, schema evolution, and snapshot isolation, which makes the SCD Type 2 `MERGE` pattern safe to run nightly without partial-write corruption. Plain parquet would have required hand-rolling all of that.
-- **Two nested state machines instead of one.** Ingestion and transformation fail differently and at different timescales. Splitting them keeps each state machine small, makes the transformation pipeline re-runnable on its own when ingestion already succeeded, and isolates blast radius.
-- **A relational Postgres serving layer rather than querying Iceberg directly.** The consuming application already speaks SQL to Postgres. Mirroring the star schema into RDS — with PK/FK constraints intact — gave the app a familiar, low-latency, referentially-safe target without coupling it to the lake's query engine.
+### Why AWS Glue for transforms rather than Lambda?
+
+Lambda is the wrong shape for this workload, on three separate axes:
+
+- **Compute model.** The heavy steps are distributed joins across several hundred tables, an Iceberg `MERGE` maintaining SCD Type 2 history, and `CREATE TABLE AS SELECT` fact builds resolving surrogate keys. That is a Spark workload. Lambda is single-node with a 10 GB memory ceiling — you would end up sharding the work across invocations by hand and rebuilding a scheduler and a shuffle, badly.
+- **Execution time.** Lambda hard-stops at 15 minutes. The nightly transform steps run well past that, and the failure mode is not a slow job — it is a *truncated* one. A timeout mid-`MERGE` on a dimension is exactly the corruption the Iceberg design exists to prevent.
+- **Ecosystem fit.** Glue reads the Glue Data Catalog the crawler populates, ships the Iceberg runtime natively, and writes parquet to S3 without glue code. On Lambda all of that is a dependency-packaging problem.
+
+**The trade-off I accepted.** Glue jobs have a startup cost of roughly a minute or two and bill per DPU-hour with a minimum billing duration, so Glue is genuinely wasteful for small, fast work. That is not a hypothetical — it is why **Lambda is still in this architecture**, as the task workers that start and poll DMS, crawlers, and Glue jobs. Those calls are sub-second, stateless, and run dozens of times per night. The decision was never "Glue *or* Lambda"; it was *distributed transforms on Glue, control-plane API calls on Lambda*.
+
+**What else was on the table.** EMR gives more engine control and better economics at sustained scale, but it adds cluster lifecycle management to a client with no data team. Glue Python Shell jobs avoid Spark startup cost, but then you are back to single-node. Glue was the right point on the curve for one nightly batch of ~750k records.
+
+### Why Step Functions for orchestration rather than Airflow?
+
+The honest primary driver is **operational cost of ownership**. The client has no data engineering team; whatever orchestrates this has to survive without anyone tending it.
+
+- **Nothing to keep running.** MWAA (managed Airflow) bills for an always-on environment whether or not a DAG fires. This pipeline runs *once a night*. Step Functions bills per state transition, which at this cadence rounds to nothing, and EventBridge Scheduler replaces the scheduler process entirely.
+- **Retries are configuration, not code.** Exponential backoff, jitter, bounded retry counts, and `Catch` blocks routing to SNS are declared in the state machine definition. In Airflow a meaningful share of that becomes operator arguments plus custom callback code that has to be tested.
+- **Execution history is the audit trail.** Every run's inputs, outputs, and per-state timings are retained and inspectable without standing up logging infrastructure or a metadata database. For a compliance-adjacent public-sector workload, "show me exactly what last Tuesday's run did" is a real question with a first-class answer.
+- **Managed IAM boundaries.** Each state assumes a role. There is no worker fleet holding broad credentials.
+
+**The trade-off I accepted.** Amazon States Language is verbose and awkward to test locally — there is no clean equivalent of running a DAG on your laptop, and iteration means deploying. Airflow's Python-native authoring, backfill semantics, and dependency graph are genuinely nicer *if you already operate Airflow*. I did not, and neither did the client. Step Functions also caps execution history events on Standard workflows, which is a real constraint if you ever fan out per-table — the fixed-sequence design here stays far below it.
+
+**What else was on the table.** A cron-triggered Lambda chaining the next job on each completion. Cheapest possible option, and the reason it lost is that failure handling, partial re-runs, and "where did last night's run stop?" all become bespoke code with no state model behind them.
+
+### Why nested state machines instead of one?
+
+Ingestion and transformation fail differently and on different timescales. Splitting them keeps each definition small, makes the transformation half re-runnable on its own when ingestion already succeeded — the single most common real-world recovery action — and isolates blast radius. The outer machine invokes the inner one with `startExecution.sync`, so the outer execution's status is still the true end-to-end status. The cost is two definitions to maintain instead of one.
+
+### Why Iceberg rather than plain parquet?
+
+Iceberg provides ACID writes, snapshot isolation, and schema evolution. That is what makes a nightly SCD Type 2 `MERGE` safe to run unattended: it either fully applies or does not, so a mid-run failure cannot leave a dimension half-updated. Schema evolution matters because the source OLTP schema changes over time and the warehouse must absorb that without a full rebuild. Plain parquet directories would mean hand-rolling atomicity, and the failure mode is silent history corruption. The cost is new operational concepts — snapshots, metadata files, table maintenance.
+
+### Why mirror to PostgreSQL rather than query Iceberg directly?
+
+The consuming application already speaks SQL to Postgres. Mirroring the modelled star schema into RDS — with PK/FK constraints rebuilt — gives the app a familiar, low-latency, referentially-intact target without coupling it to the lake's query engine or its cold-start characteristics. Athena over Iceberg would have removed a copy step and a database to operate, at the cost of per-query billing, higher and less predictable latency, and rewriting the application's data access layer. The trade-off is a copy step and two stores to keep in sync, which the nightly cadence makes acceptable.
+
+### Why DMS rather than a Glue JDBC extract?
+
+DMS is purpose-built for reading a live OLTP database without holding long-running transactions against it — the entire premise of the project is not degrading the client's production application. It lands parquet in S3 with no bespoke connector code and no extraction logic to maintain as the source schema drifts. The trade-off is a replication instance that costs money whether or not it is replicating, and the current design does a nightly full load rather than true CDC; moving to CDC is the obvious lever if source volume grows.
+
+### Why nightly batch rather than streaming?
+
+The requirement is historical trend analysis, compliance reporting, and sector aggregations. None of it is improved by sub-daily freshness, and streaming would multiply both cost and operational surface for no benefit the users would notice. Up to 24 hours of staleness is an accepted, documented property of the system, not an oversight.
+
+### Why `af-south-1`?
+
+Data residency. This is South African public-sector data with POPIA obligations, and the source system is already in-country — keeping the analytical copy in Cape Town avoids a cross-border transfer question entirely, and keeps latency to the client's users low. The trade-off is real: `af-south-1` has a smaller service catalogue, higher unit pricing than `us-east-1`, and new AWS features land there late. That is the right price to pay for not having to argue about where the data physically sits.
+
+### Why SNS alerting rather than a monitoring stack?
+
+The operational requirement is "a failed run must not be discovered as a stale dashboard the next morning." An SNS notification wired from every failed state meets that requirement completely. CloudWatch dashboards, anomaly detection, or a paging tool would be more capable and would also be infrastructure nobody at the client is positioned to maintain. Right-sizing the ops surface to the team that inherits it is itself a design decision.
 
 ## What I would improve
 
