@@ -113,7 +113,7 @@ Short ADR-style records of the decisions that shaped this system. Each notes the
 
 ## 11. AWS DMS for extraction, not a Glue JDBC read
 
-**Context.** The source is a live Azure SQL database backing a production web application. The premise of the project is that analytics must not degrade it.
+**Context.** The source is a live Azure Database for MySQL backing a production web application. The premise of the project is that analytics must not degrade it.
 
 **Decision.** Use AWS DMS to replicate source tables into the S3 raw zone as parquet.
 
@@ -157,7 +157,7 @@ Short ADR-style records of the decisions that shaped this system. Each notes the
 
 **Trade-off.** No trend visibility on run duration or record counts, so gradual degradation is invisible until it becomes a failure. Right-sizing the operational surface to the team that inherits the system is itself the decision; emitting run metrics to CloudWatch would be a cheap, proportionate next step.
 
-## 16. Provisioned via console and SDK, not IaC — *would revisit*
+## 16. Provisioned via console and SDK, not IaC — *revisited*
 
 **Context.** The system grew incrementally against a live client need rather than being designed up-front.
 
@@ -165,4 +165,6 @@ Short ADR-style records of the decisions that shaped this system. Each notes the
 
 **Why it was done this way.** It was the fastest path to a working nightly pipeline while the shape of the solution was still moving, and the client's need was for a running system, not a reproducible one.
 
-**What I would change.** Capture the whole stack in Terraform with remote state and plan-on-PR. As built, the environment is not reproducible from source and there is no review gate on infrastructure change — the two things I would want before anyone else touched it. That migration is in progress separately.
+**What I changed.** I rebuilt the whole design as Terraform — [datalakehouse-infra](https://github.com/Kiveshan/datalakehouse-infra): remote S3-backed state with native locking, the DMS wiring extracted into a self-contained, account-agnostic module, and both Step Functions state machines templated from the actual Lambda ARNs and Glue job names so the definitions can't drift from what's deployed. It captures what a reproducible, reviewable version of this environment should look like — plan-on-PR is the natural next step once it has a CI story.
+
+**What's still open.** This Terraform targets a fresh AWS account, not the client's live one — it's a from-scratch reconstruction of the design, not a cutover of the production system this case study describes. It hasn't been run against real data yet, so at least one piece (`build_etqa_facts`'s join logic) is a documented, unverified placeholder pending a real crawl. Cutting the actual client environment over to this Terraform — importing existing resources, reconciling state, verifying zero downtime — is separate, unstarted work.

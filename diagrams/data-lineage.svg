@@ -1,6 +1,6 @@
 <svg width="420" viewBox="0 0 680 700" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
   <title>Data lakehouse lineage</title>
-  <desc>Azure SQL source replicated by DMS into an S3 raw zone, refined through a curated layer 1, modelled into Iceberg dimensions and facts as a Kimball star schema, then mirrored to RDS PostgreSQL for serving.</desc>
+  <desc>Azure MySQL source replicated by DMS into an S3 raw zone, refined through a curated layer 1, modelled into Iceberg dimensions and facts as a Kimball star schema, then mirrored to RDS PostgreSQL for serving.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M2 1L8 5L2 9" fill="none" stroke="#73726c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -8,7 +8,7 @@
   </defs>
 
   <rect x="180" y="30" width="320" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="1"/>
-  <text x="340" y="56" text-anchor="middle" font-size="15" font-weight="500" fill="#2C2C2A">Azure SQL</text>
+  <text x="340" y="56" text-anchor="middle" font-size="15" font-weight="500" fill="#2C2C2A">Azure MySQL</text>
   <text x="340" y="75" text-anchor="middle" font-size="12.5" fill="#5F5E5A">Source application database</text>
   <line x1="340" y1="90" x2="340" y2="112" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
 

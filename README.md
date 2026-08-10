@@ -2,22 +2,24 @@
 
 An end-to-end AWS data lakehouse that ingests a production operational database nightly, refines it through a medallion (multi-hop) architecture, models it into a Kimball star schema on Apache Iceberg, and serves it from PostgreSQL. Running unattended in production since August 2025, processing roughly **750,000 records per nightly run**.
 
+The infrastructure-as-code reconstruction of this pipeline is public: **[datalakehouse-infra](https://github.com/Kiveshan/datalakehouse-infra)** (Terraform + Glue/Lambda source). It is a from-scratch Terraform build of the same design, written against a fresh AWS account rather than a live cutover of the client's environment — see [What I would improve](#what-i-would-improve) for how it relates to the production system described here.
+
 **Stack:** AWS DMS · S3 · Glue (PySpark) · Apache Iceberg · Step Functions · EventBridge Scheduler · Lambda · SNS · RDS PostgreSQL · `af-south-1`
 
-> **No source code in this repository.** This system was built for a paying client under confidentiality. This repo is an architecture write-up only — diagrams, design decisions, and trade-offs. No scripts, credentials, schemas, or client data are included. See [Why there is no code here](#why-there-is-no-code-here).
+> **No source code in this repository.** This system was built for a paying client under confidentiality. This repo is an architecture write-up only — diagrams, design decisions, and trade-offs. No scripts, credentials, schemas, or client data are included. See [Why there is no code here](#why-there-is-no-code-here). The linked [datalakehouse-infra](https://github.com/Kiveshan/datalakehouse-infra) repo is a separate, from-scratch Terraform reconstruction of the same design against a fresh AWS account — it contains no client schema, data, or credentials either.
 
 ---
 
 ## Context
 
-The client is a South African public-sector skills-development authority. Their operational platform runs on a managed Azure SQL database behind a web application. They needed analytical reporting — historical trend analysis, compliance reporting, and sector-wide aggregations — that could not be run against the live transactional database without degrading the application.
+The client is a South African public-sector skills-development authority. Their operational platform runs on a managed Azure Database for MySQL behind a web application. They needed analytical reporting — historical trend analysis, compliance reporting, and sector-wide aggregations — that could not be run against the live transactional database without degrading the application.
 
 The problem was the classic one: a normalised, highly relational OLTP schema (hundreds of tables) is the wrong shape for analytics, and querying it directly competes with production traffic. The brief was to stand up a separate analytical layer, refreshed nightly, that preserves point-in-time history and presents a query-friendly model — without a dedicated data team to operate it.
 
 ## Outcome
 
 - A lakehouse refreshed **nightly, unattended**, in production since August 2025.
-- ~**750,000 records** ingested per run from the Azure SQL source.
+- ~**750,000 records** ingested per run from the Azure MySQL source.
 - **~400 modelled entities** in a Kimball-compliant dimensional schema with full SCD Type 2 history.
 - **Zero manual steps** in the steady state: a single scheduled trigger runs ingestion, transformation, modelling, and publishing, with automatic retries and failure alerting.
 - Analytical load fully isolated from the production OLTP database.
@@ -28,7 +30,7 @@ The data plane is a medallion architecture: raw data lands untouched, then is pr
 
 ![Data lineage](diagrams/data-lineage.svg)
 
-1. **Source — Azure SQL.** The live operational database, owned by the client's application.
+1. **Source — Azure MySQL.** The live operational database, owned by the client's application.
 2. **Ingestion — AWS DMS.** Database Migration Service replicates the source tables into an S3 raw zone as parquet. A Glue crawler catalogs the raw zone into the Glue Data Catalog so it is queryable and discoverable by downstream jobs.
 3. **Layer 1 — curated (S3).** A PySpark Glue job cleans the raw tables: it standardises types, and removes document/file-path columns that carry no analytical value (and that would otherwise leak storage references into the warehouse). Output is parquet under a `curated/layer1/` prefix.
 4. **Layer 2 — dimensions (Iceberg).** A nightly SCD Type 2 job builds and maintains dimension tables as Apache Iceberg tables, using `MERGE` to close changed rows, expire deleted rows, and insert new/changed versions — preserving point-in-time history.
@@ -47,7 +49,7 @@ The control plane is a two-level Step Functions design that separates **ingestio
 - **EventBridge Scheduler** fires the pipeline nightly.
 - The **outer state machine** archives the previous raw data, starts DMS, polls until replication completes, runs and polls the raw crawler, then runs a **data-quality gate** before going further. It then invokes the inner machine synchronously (`startExecution.sync`) so the outer execution reflects the true end-to-end status.
 - The **inner state machine** runs the Glue jobs in strict sequence: raw → layer 1 → dimensions → facts → publish-to-Postgres. Each step follows a `start → wait → check → choice` polling loop, with exponential backoff, jitter, and retry limits.
-- **Lambda functions** are the task workers that start and poll Glue jobs, DMS, and crawlers.
+- **Lambda functions** — nine of them — are the task workers that start and poll Glue jobs, DMS, and crawlers.
 - **SNS** sends a failure notification from any failed state, so a broken run is surfaced rather than silently producing stale data.
 
 ## Data model
@@ -136,11 +138,13 @@ Being honest about the trade-offs is part of the point of this write-up.
 
 - **Replace polling Lambdas with native Step Functions service integrations.** Much of the orchestration polls Glue jobs and crawlers through Lambda workers. Step Functions supports `.sync` integrations for Glue jobs and SDK integrations for DMS and crawlers, which would remove most of those Lambdas and their cold-start and status-parsing overhead.
 - **Confirm and codify incremental load at layer 1.** The SCD Type 2 step is incremental; the upstream cleaning step should be audited to ensure it is not reprocessing unchanged tables in full every night, which is the obvious cost lever as the dataset grows.
-- **Infrastructure as code.** This system was provisioned through the console and SDK over time. Capturing it in Terraform (with remote state and plan-on-PR) would make it reproducible and reviewable — that migration is in progress separately.
+- **Infrastructure as code.** The production system described above was provisioned through the console and SDK over time, not IaC. I've since rebuilt the design as Terraform in **[datalakehouse-infra](https://github.com/Kiveshan/datalakehouse-infra)** — remote state, a self-contained DMS module, and all nine orchestration Lambdas and Glue jobs as code — but that build targets a fresh AWS account, not the client's live environment, and hasn't been run against real data (the `build_etqa_facts` join logic in particular is flagged there as an unverified placeholder pending a real crawl). It demonstrates the reproducible shape this pipeline should have had from the start; cutting the actual client environment over to it is separate, unstarted work.
 
 ## Why there is no code here
 
-The pipeline scripts contain client-specific schema, table mappings, connection details, and business logic that belong to the client. Publishing them would expose confidential information and infrastructure detail. A redacted code dump also reads worse to an engineer than a clear architecture write-up: the value of this project is the *design* — the layering, the history-preservation strategy, the orchestration model — and that is exactly what this repo communicates. The diagrams here are reconstructions that contain no account identifiers, endpoints, ARNs, or credentials.
+The pipeline scripts running against the client's actual account contain client-specific schema, table mappings, connection details, and business logic that belong to the client. Publishing them would expose confidential information and infrastructure detail. A redacted code dump also reads worse to an engineer than a clear architecture write-up: the value of this project is the *design* — the layering, the history-preservation strategy, the orchestration model — and that is exactly what this repo communicates. The diagrams here are reconstructions that contain no account identifiers, endpoints, ARNs, or credentials.
+
+What *is* published is [datalakehouse-infra](https://github.com/Kiveshan/datalakehouse-infra) — the same design rebuilt as Terraform from scratch against a fresh, non-client AWS account, with generic table names and no client data anywhere in it. That repo is the place to see actual Terraform, Glue PySpark, and Lambda source; this one is the place to see why each choice was made.
 
 ## Repository structure
 

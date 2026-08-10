@@ -6,7 +6,7 @@ This document expands on the layered data plane and the orchestration control pl
 
 ### Source
 
-A managed Azure SQL database backing the client's operational web application. It is a normalised OLTP schema spanning several hundred tables across multiple subject areas (accounts and identity, company/provider registration, assessment and quality assurance, and discretionary-grant lifecycle). Analytics cannot run against it directly without competing with production traffic.
+A managed Azure Database for MySQL backing the client's operational web application. It is a normalised OLTP schema spanning several hundred tables across multiple subject areas (accounts and identity, company/provider registration, assessment and quality assurance, and discretionary-grant lifecycle). Analytics cannot run against it directly without competing with production traffic.
 
 ### Ingestion — DMS into the raw zone
 
