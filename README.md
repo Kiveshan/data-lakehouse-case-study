@@ -22,7 +22,7 @@ The problem was the classic one: a normalised, highly relational OLTP schema (hu
 
 - A lakehouse refreshed **nightly, unattended**, in production from August 2025 to August 2026.
 - ~**750,000 records** ingested per run from the Azure MySQL source.
-- **~400 modelled entities** in a Kimball-compliant dimensional schema with full SCD Type 2 history.
+- Full SCD Type 2 history for **353 source tables**, 47 of them modelled into a Kimball star of **14 fact tables** and **15 conformed dimensions**.
 - **Zero manual steps** in the steady state: a single scheduled trigger runs ingestion, transformation, modelling, and publishing, with automatic retries and failure alerting.
 - Analytical load fully isolated from the production OLTP database.
 
