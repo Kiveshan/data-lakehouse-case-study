@@ -1,6 +1,8 @@
 # Public-sector data lakehouse — architecture case study
 
-An end-to-end AWS data lakehouse that ingests a production operational database nightly, refines it through a medallion (multi-hop) architecture, models it into a Kimball star schema on Apache Iceberg, and serves it from PostgreSQL. Running unattended in production since August 2025, processing roughly **750,000 records per nightly run**.
+An end-to-end AWS data lakehouse that ingests a production operational database nightly, refines it through a medallion (multi-hop) architecture, models it into a Kimball star schema on Apache Iceberg, and serves it from PostgreSQL. It ran unattended in production from August 2025 to August 2026, processing roughly **750,000 records per nightly run**.
+
+> **Status:** The production pipeline stopped running in August 2026 and is no longer active. This write-up describes the system as it ran during that period.
 
 The infrastructure-as-code reconstruction of this pipeline is public: **[datalakehouse-infra](https://github.com/Kiveshan/datalakehouse-infra)** (Terraform + Glue/Lambda source). It is a from-scratch Terraform build of the same design, written against a fresh AWS account rather than a live cutover of the client's environment — see [What I would improve](#what-i-would-improve) for how it relates to the production system described here.
 
@@ -18,7 +20,7 @@ The problem was the classic one: a normalised, highly relational OLTP schema (hu
 
 ## Outcome
 
-- A lakehouse refreshed **nightly, unattended**, in production since August 2025.
+- A lakehouse refreshed **nightly, unattended**, in production from August 2025 to August 2026.
 - ~**750,000 records** ingested per run from the Azure MySQL source.
 - **~400 modelled entities** in a Kimball-compliant dimensional schema with full SCD Type 2 history.
 - **Zero manual steps** in the steady state: a single scheduled trigger runs ingestion, transformation, modelling, and publishing, with automatic retries and failure alerting.
@@ -138,7 +140,7 @@ Being honest about the trade-offs is part of the point of this write-up.
 
 - **Replace polling Lambdas with native Step Functions service integrations.** Much of the orchestration polls Glue jobs and crawlers through Lambda workers. Step Functions supports `.sync` integrations for Glue jobs and SDK integrations for DMS and crawlers, which would remove most of those Lambdas and their cold-start and status-parsing overhead.
 - **Confirm and codify incremental load at layer 1.** The SCD Type 2 step is incremental; the upstream cleaning step should be audited to ensure it is not reprocessing unchanged tables in full every night, which is the obvious cost lever as the dataset grows.
-- **Infrastructure as code.** The production system described above was provisioned through the console and SDK over time, not IaC. I've since rebuilt the design as Terraform in **[datalakehouse-infra](https://github.com/Kiveshan/datalakehouse-infra)** — remote state, a self-contained DMS module, and all nine orchestration Lambdas and Glue jobs as code — but that build targets a fresh AWS account, not the client's live environment, and hasn't been run against real data (the `build_etqa_facts` join logic in particular is flagged there as an unverified placeholder pending a real crawl). It demonstrates the reproducible shape this pipeline should have had from the start; cutting the actual client environment over to it is separate, unstarted work.
+- **Infrastructure as code.** The production system described above was provisioned through the console and SDK over time, not IaC. I've since rebuilt the design as Terraform in **[datalakehouse-infra](https://github.com/Kiveshan/datalakehouse-infra)** — remote state, a self-contained DMS module, and all nine orchestration Lambdas and Glue jobs as code — but that build targets a fresh AWS account, not the client's environment, and hasn't been run against real data (the `build_etqa_facts` join logic in particular is flagged there as an unverified placeholder pending a real crawl). It demonstrates the reproducible shape this pipeline should have had from the start; cutting the actual client environment over to it is separate, unstarted work.
 
 ## Why there is no code here
 
